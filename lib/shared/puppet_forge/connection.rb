@@ -3,6 +3,7 @@ require 'shared/puppet_forge/connection/connection_failure'
 
 require 'faraday'
 require 'faraday_middleware'
+require 'openssl'
 
 module PuppetForge
   # Provide a common mixin for adding a HTTP connection to classes.
@@ -52,13 +53,40 @@ module PuppetForge
         options[:headers][:authorization] = token
       end
 
-      Faraday.new(url, options) do |builder|
-        builder.response(:json, :content_type => /\bjson$/)
-        builder.response(:raise_error)
-        builder.use(:connection_failure)
-
-        builder.adapter(*adapter_args)
+      builder = Faraday::RackBuilder.new do |b|
+        b.response(:json, :content_type => /\bjson$/)
+        b.response(:raise_error)
+        b.adapter(*adapter_args)
       end
+
+      options[:builder] = builder
+
+      if url.match(/^https/)
+        conn = make_https_connection(url, options)
+      else
+        conn = make_http_connection(url, options)
+      end
+
+      conn
     end
+
+    def make_http_connection(url, options)
+      Faraday.new(url, options)
+    end
+
+    def make_https_connection(url, options)
+      cert_store = OpenSSL::X509::Store.new
+      cert_store.set_default_paths
+      add_rubygems_trusted_certs(cert_store)
+
+      Faraday.new(url, options.merge(:ssl => {:cert_store => cert_store}))
+    end
+
+    def add_rubygems_trusted_certs(store)
+      pattern = File.expand_path("./ssl_certs/*.pem", File.dirname(__FILE__))
+      Dir.glob(pattern).each do |ssl_cert_file|
+      store.add_file ssl_cert_file
+    end
+  end
   end
 end
